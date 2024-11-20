@@ -66,19 +66,6 @@ pub mod voting {
         _poll_id: u64,
         _candidate_name: String,
     ) -> Result<()> {
-        msg!(
-            "Derived voter_account PDA: {}",
-            Pubkey::create_program_address(
-                &[
-                    _poll_id.to_le_bytes().as_ref(),
-                    _ctx.accounts.signer.key().as_ref(),
-                    &[_ctx.bumps["voter_account"]]
-                ],
-                _ctx.program_id
-            )
-            .unwrap()
-        );
-
         let poll_account = &mut _ctx.accounts.poll_account;
         let current_time = Clock::get()?.unix_timestamp as u64;
 
@@ -87,7 +74,19 @@ pub mod voting {
             CustomError::PollNotActive
         );
 
+        // because, rely on solana mechanic, each PDA account will only initialized once
+        // in this case is : User trying to hit the vote function twice => Re-initialized the account
+        // that already exist, lead to account already in use error
+
         //  If the account exists, Anchor will throw an error during the PDA validation.
+        if !_ctx
+            .accounts
+            .voter_account
+            .to_account_info()
+            .data_is_empty()
+        {
+            return Err(CustomError::AlreadyVoted.into());
+        }
 
         let candidate_account = &mut _ctx.accounts.candidate_account;
         candidate_account.candidate_vote += 1; // increment number of vote

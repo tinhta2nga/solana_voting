@@ -13,9 +13,8 @@ describe("Voting", () => {
   const pollId = new anchor.BN(1);
   const description = "Test Poll";
   const candidateName = "Dick A";
-  // const startTime = new anchor.BN(Date.now());
-  // const endTime = new anchor.BN(Date.now() + 100000);
 
+  //  ensure the poll is already active when the test runs.
   const now = Math.floor(Date.now() / 1000); // Current UNIX timestamp in seconds
   const startTime = new anchor.BN(now - 10); // Start 10 seconds ago
   const endTime = new anchor.BN(now + 60); // End 60 seconds from now
@@ -101,20 +100,26 @@ describe("Voting", () => {
   });
 
   // Vote for Candidate
-  it.only("Votes for a candidate", async () => {
+  it("Votes for a candidate", async () => {
     // Fund user
     const airdropSignature = await provider.connection.requestAirdrop(
       user.publicKey,
       anchor.web3.LAMPORTS_PER_SOL
     );
-    await provider.connection.confirmTransaction(airdropSignature);
-  
-    // Derive Poll PDA
+
+    const latestBlockhash = await provider.connection.getLatestBlockhash();
+    await provider.connection.confirmTransaction({
+      signature: airdropSignature,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+    });
+
+    // Derive Poll PDA, poll account
     [pollAccount] = await anchor.web3.PublicKey.findProgramAddressSync(
       [pollId.toArrayLike(Buffer, "le", 8)], // Ensure little-endian
       program.programId
     );
-  
+
     // Initialize Poll
     await program.methods
       .initialize(pollId, description, startTime, endTime)
@@ -124,14 +129,15 @@ describe("Voting", () => {
         systemProgram: anchor.web3.SystemProgram.programId,
       })
       .rpc();
-  
-    // Derive Candidate PDA
-    const [candidateAccount, candidateBump] = await anchor.web3.PublicKey.findProgramAddressSync(
-      [pollId.toArrayLike(Buffer, "le", 8), Buffer.from(candidateName)],
-      program.programId
-    );
+
+    // Derive Candidate PDA, candidate account
+    const [candidateAccount, candidateBump] =
+      await anchor.web3.PublicKey.findProgramAddressSync(
+        [pollId.toArrayLike(Buffer, "le", 8), Buffer.from(candidateName)],
+        program.programId
+      );
     console.log("Derived Candidate PDA:", candidateAccount.toBase58());
-  
+
     // Initialize Candidate
     await program.methods
       .initializeCandidate(pollId, candidateName)
@@ -142,21 +148,25 @@ describe("Voting", () => {
         systemProgram: anchor.web3.SystemProgram.programId,
       })
       .rpc();
-  
+
     // Derive Voter PDA
-    const [voterAccount, voterBump] = await anchor.web3.PublicKey.findProgramAddressSync(
-      [pollId.toArrayLike(Buffer, "le", 8), user.publicKey.toBuffer()],
-      program.programId
-    );
+    const [voterAccount, voterBump] =
+      await anchor.web3.PublicKey.findProgramAddressSync(
+        [pollId.toArrayLike(Buffer, "le", 8), user.publicKey.toBuffer()],
+        program.programId
+      );
     console.log("Derived Voter PDA:", voterAccount.toBase58());
-  
+
     // Ensure sufficient lamports for rent
-    const rentExemption = await provider.connection.getMinimumBalanceForRentExemption(40);
+    const rentExemption =
+      await provider.connection.getMinimumBalanceForRentExemption(40);
     const balance = await provider.connection.getBalance(user.publicKey);
     if (balance < rentExemption) {
-      throw new Error("Insufficient lamports for voter_account initialization.");
+      throw new Error(
+        "Insufficient lamports for voter_account initialization."
+      );
     }
-  
+
     // Call Vote
     try {
       await program.methods
@@ -174,61 +184,138 @@ describe("Voting", () => {
       console.error("Transaction failed:", err);
       throw err;
     }
-  
+
     // Fetch Candidate Account
     const candidate = await program.account.candidate.fetch(candidateAccount);
-    console.log("Candidate Votes After Voting:", candidate.candidateVote.toNumber());
-    assert.strictEqual(candidate.candidateVote.toNumber(), 1);
-  
+    console.log(
+      "Candidate Votes After Voting:",
+      candidate.candidateVote.toNumber()
+    );
+    assert.strictEqual(candidate.candidateVote.toNumber(), 1); // 1 user vote 1 time
+
     // Fetch Voter Account
     const voter = await program.account.voter.fetch(voterAccount);
     console.log("Voter Account After Voting:", voter);
+    console.log("Voter vote:", voter.voter); // candidate who voted
     assert.strictEqual(voter.pollId.toNumber(), pollId.toNumber());
     assert.strictEqual(voter.voter.toBase58(), user.publicKey.toBase58());
   });
-  
+
   // Prevent Duplicate Votes
-  it.skip("Prevents duplicate votes", async () => {
+  it.only("Prevents duplicate votes", async () => {
+    // Fund user
+    const airdropSignature = await provider.connection.requestAirdrop(
+      user.publicKey,
+      anchor.web3.LAMPORTS_PER_SOL
+    );
+
+    const latestBlockhash = await provider.connection.getLatestBlockhash();
+    await provider.connection.confirmTransaction({
+      signature: airdropSignature,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+    });
+    // First one we will initialize poll account
+    // admin will serve these one
+    [pollAccount] = await anchor.web3.PublicKey.findProgramAddressSync(
+      [pollId.toArrayLike(Buffer, "le", 8)],
+      program.programId
+    );
+
+    // init it
+    await program.methods
+      .initialize(pollId, description, startTime, endTime)
+      .accounts({
+        pollAccount,
+        signer: owner.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+
+    // Owner initialize candidate account
+    [candidateAccount] = await anchor.web3.PublicKey.findProgramAddressSync(
+      [pollId.toArrayLike(Buffer, "le", 8), Buffer.from(candidateName)],
+      program.programId
+    );
+
+    await program.methods
+      .initializeCandidate(pollId, candidateName)
+      .accounts({
+        pollAccount,
+        candidateAccount,
+        signer: owner.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+
+    // Then, this time. User will vote by using their account
+    [voterAccount] = await anchor.web3.PublicKey.findProgramAddressSync(
+      [pollId.toArrayLike(Buffer, "le", 8), user.publicKey.toBuffer()],
+      program.programId
+    );
+
+    await program.methods
+      .vote(pollId, candidateName)
+      .accounts({
+        pollAccount,
+        candidateAccount,
+        voterAccount,
+        signer: user.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([user])
+      .rpc();
+
+    // After vote, fetch the candidate account
+    const candidate = await program.account.candidate.fetch(candidateAccount);
+    console.log(
+      "Candidate Votes After Voting:",
+      candidate.candidateVote.toNumber()
+    );
+
+    // then try to vote one more time
     try {
-      // Attempt to vote again
+      // Attempt the first vote (should succeed)
       await program.methods
         .vote(pollId, candidateName)
         .accounts({
           pollAccount,
           candidateAccount,
           voterAccount,
-          signer: signer.publicKey,
+          signer: user.publicKey,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
+        .signers([user])
         .rpc();
-
-      assert.fail("Expected an error for duplicate voting");
-    } catch (err) {
-      // Check for the custom AlreadyVoted error
-      assert.strictEqual(err.error.errorCode.code, "AlreadyVoted");
-    }
-  });
-
-  // Test Invalid Poll ID
-  it.skip("Fails for an invalid poll ID", async () => {
-    const invalidPollId = new anchor.BN(999); // Non-existent poll
-    const invalidVoterAccount = anchor.web3.Keypair.generate();
-
-    try {
+  
+      console.log("First vote succeeded.");
+  
+      // Attempt a duplicate vote (should fail)
       await program.methods
-        .vote(invalidPollId, candidateName)
+        .vote(pollId, candidateName)
         .accounts({
-          pollAccount: invalidPollId,
+          pollAccount,
           candidateAccount,
-          voterAccount: invalidVoterAccount.publicKey,
-          signer: signer.publicKey,
+          voterAccount,
+          signer: user.publicKey,
           systemProgram: anchor.web3.SystemProgram.programId,
         })
+        .signers([user])
         .rpc();
-
-      assert.fail("Expected an error for invalid poll ID");
+  
+      // If no error is thrown, fail the test
+      assert.fail("Expected an AlreadyVoted error but the vote succeeded.");
     } catch (err) {
-      assert.include(err.message, "AccountNotInitialized");
+      // Assert the error code
+      assert.strictEqual(err.error.errorCode.number, 6003, "Unexpected error code");
+      // Assert the error message
+      assert.strictEqual(
+        err.error.errorMessage,
+        "You have already voted in this poll.",
+        "Unexpected error message"
+      );
+      console.log("Duplicate vote prevented successfully with expected error.");
     }
   });
+
 });
