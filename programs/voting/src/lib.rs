@@ -31,8 +31,8 @@ pub mod voting {
     // add a check to ensure the signer is the creator of the poll
     pub fn initialize_candidate(
         _ctx: Context<InitializeCandidate>,
-        _candidate_name: String,
         _poll_id: u64,
+        _candidate_name: String,
     ) -> Result<()> {
         // validate the poll account matched the poll_id
         let poll_account = &mut _ctx.accounts.poll_account; // point to poll_account account context
@@ -66,6 +66,19 @@ pub mod voting {
         _poll_id: u64,
         _candidate_name: String,
     ) -> Result<()> {
+        msg!(
+            "Derived voter_account PDA: {}",
+            Pubkey::create_program_address(
+                &[
+                    _poll_id.to_le_bytes().as_ref(),
+                    _ctx.accounts.signer.key().as_ref(),
+                    &[_ctx.bumps["voter_account"]]
+                ],
+                _ctx.program_id
+            )
+            .unwrap()
+        );
+
         let poll_account = &mut _ctx.accounts.poll_account;
         let current_time = Clock::get()?.unix_timestamp as u64;
 
@@ -186,7 +199,7 @@ pub struct InitializeCandidate<'info> {
         init,
         payer = signer,
         space = 8 + Candidate::INIT_SPACE,
-        seeds = [poll_id.to_be_bytes().as_ref(),candidate_name.as_bytes()],
+        seeds = [poll_id.to_le_bytes().as_ref(),candidate_name.as_bytes()], // Seed Derivation Depends on Argument Order:
         bump
     )]
     pub candidate_account: Account<'info, Candidate>,
@@ -217,8 +230,8 @@ pub struct InitializeVote<'info> {
     #[account(
         init,
         payer = signer,
-        space = 8 + 32, //// 8 bytes for discriminator + 32 bytes for Pubkey
-        seeds = [poll_id.to_be_bytes().as_ref(),signer.key().as_ref()], // The PDA for the Voter account is derived from the poll_id and the voter’s public key (signer.key()), ensuring that each user can only have one Voter account per poll.
+        space = 8 + 8 + 32, //// 8 bytes for discriminator + 32 bytes for Pubkey
+        seeds = [poll_id.to_le_bytes().as_ref(),signer.key().as_ref()], // The PDA for the Voter account is derived from the poll_id and the voter’s public key (signer.key()), ensuring that each user can only have one Voter account per poll.
         // poll_id.to_le_bytes(): Represents the unique identifier of the poll.
         // signer.key(): Represents the unique identifier of the voter (their public key).
         // PDA Uniqueness: The combination of these two ensures that:
@@ -239,11 +252,10 @@ pub struct InitializeVote<'info> {
     // The program stores the voter's details (e.g., their public key) in the voter_account.
     // The candidate's vote count is incremented.
     // Second Time Voting
-    
+
     // When the voter tries to vote again:
     // Anchor attempts to initialize the voter_account again using the same PDA.
     // Since the account already exists, the transaction fails due to the PDA uniqueness constraint.
-
 
     // reason this signer does not have accounts(mut)
     //The #[account(mut)] attribute is used when the account’s data or lamports

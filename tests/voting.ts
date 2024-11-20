@@ -12,9 +12,13 @@ describe("Voting", () => {
 
   const pollId = new anchor.BN(1);
   const description = "Test Poll";
-  const candidateName = "A";
-  const startTime = new anchor.BN(Date.now());
-  const endTime = new anchor.BN(Date.now() + 100000);
+  const candidateName = "Dick A";
+  // const startTime = new anchor.BN(Date.now());
+  // const endTime = new anchor.BN(Date.now() + 100000);
+
+  const now = Math.floor(Date.now() / 1000); // Current UNIX timestamp in seconds
+  const startTime = new anchor.BN(now - 10); // Start 10 seconds ago
+  const endTime = new anchor.BN(now + 60); // End 60 seconds from now
 
   // PDA Addresses - context account (store program data)
   // determine this one by define the context in main program
@@ -55,15 +59,82 @@ describe("Voting", () => {
 
   // Initialize Candidate
   it("Adds a candidate to the poll", async () => {
-    // Derive the candidate account PDA
-    [candidateAccount] = await anchor.web3.PublicKey.findProgramAddressSync(
-      [pollId.toArrayLike(Buffer, "le", 8), Buffer.from(candidateName)],
+    [pollAccount] = await anchor.web3.PublicKey.findProgramAddressSync(
+      [pollId.toArrayLike(Buffer, "le", 8)],
       program.programId
     );
 
-    // Call the initialize_candidate function
     await program.methods
-      .initializeCandidate(candidateName, pollId)
+      .initialize(pollId, description, startTime, endTime)
+      .accounts({
+        pollAccount,
+        signer: owner.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+
+    [candidateAccount] = await anchor.web3.PublicKey.findProgramAddressSync(
+      [pollId.toArrayLike(Buffer, "be", 8), Buffer.from(candidateName)],
+      program.programId
+    );
+
+    try {
+      await program.methods
+        .initializeCandidate(pollId, candidateName)
+        .accounts({
+          pollAccount,
+          candidateAccount,
+          signer: owner.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+    } catch (err) {
+      console.error("Transaction failed:", err);
+    }
+
+    const candidate = await program.account.candidate.fetch(candidateAccount);
+
+    console.log("");
+
+    assert.strictEqual(candidate.candidateName, candidateName);
+    assert.strictEqual(candidate.candidateVote.toNumber(), 0);
+  });
+
+  // Vote for Candidate
+  it.only("Votes for a candidate", async () => {
+    // Fund user
+    const airdropSignature = await provider.connection.requestAirdrop(
+      user.publicKey,
+      anchor.web3.LAMPORTS_PER_SOL
+    );
+    await provider.connection.confirmTransaction(airdropSignature);
+  
+    // Derive Poll PDA
+    [pollAccount] = await anchor.web3.PublicKey.findProgramAddressSync(
+      [pollId.toArrayLike(Buffer, "le", 8)], // Ensure little-endian
+      program.programId
+    );
+  
+    // Initialize Poll
+    await program.methods
+      .initialize(pollId, description, startTime, endTime)
+      .accounts({
+        pollAccount,
+        signer: owner.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+  
+    // Derive Candidate PDA
+    const [candidateAccount, candidateBump] = await anchor.web3.PublicKey.findProgramAddressSync(
+      [pollId.toArrayLike(Buffer, "le", 8), Buffer.from(candidateName)],
+      program.programId
+    );
+    console.log("Derived Candidate PDA:", candidateAccount.toBase58());
+  
+    // Initialize Candidate
+    await program.methods
+      .initializeCandidate(pollId, candidateName)
       .accounts({
         pollAccount,
         candidateAccount,
@@ -71,43 +142,51 @@ describe("Voting", () => {
         systemProgram: anchor.web3.SystemProgram.programId,
       })
       .rpc();
-
-    // Fetch the candidate account to validate initialization
-    const candidate = await program.account.candidate.fetch(candidateAccount);
-    assert.strictEqual(candidate.candidateName, candidateName);
-    assert.strictEqual(candidate.candidateVote.toNumber(), 0);
-  });
-
-  // Vote for Candidate
-  it.skip("Votes for a candidate", async () => {
-    // Derive the voter account PDA
-    [voterAccount] = await anchor.web3.PublicKey.findProgramAddress(
-      [pollId.toArrayLike(Buffer, "le", 8), signer.publicKey.toBuffer()],
+  
+    // Derive Voter PDA
+    const [voterAccount, voterBump] = await anchor.web3.PublicKey.findProgramAddressSync(
+      [pollId.toArrayLike(Buffer, "le", 8), user.publicKey.toBuffer()],
       program.programId
     );
-
-    // Call the vote function
-    await program.methods
-      .vote(pollId, candidateName)
-      .accounts({
-        pollAccount,
-        candidateAccount,
-        voterAccount,
-        signer: signer.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .rpc();
-
-    // Fetch the candidate account to validate the vote
+    console.log("Derived Voter PDA:", voterAccount.toBase58());
+  
+    // Ensure sufficient lamports for rent
+    const rentExemption = await provider.connection.getMinimumBalanceForRentExemption(40);
+    const balance = await provider.connection.getBalance(user.publicKey);
+    if (balance < rentExemption) {
+      throw new Error("Insufficient lamports for voter_account initialization.");
+    }
+  
+    // Call Vote
+    try {
+      await program.methods
+        .vote(pollId, candidateName)
+        .accounts({
+          pollAccount,
+          candidateAccount,
+          voterAccount,
+          signer: user.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([user])
+        .rpc();
+    } catch (err) {
+      console.error("Transaction failed:", err);
+      throw err;
+    }
+  
+    // Fetch Candidate Account
     const candidate = await program.account.candidate.fetch(candidateAccount);
+    console.log("Candidate Votes After Voting:", candidate.candidateVote.toNumber());
     assert.strictEqual(candidate.candidateVote.toNumber(), 1);
-
-    // Fetch the voter account to ensure it was created
+  
+    // Fetch Voter Account
     const voter = await program.account.voter.fetch(voterAccount);
+    console.log("Voter Account After Voting:", voter);
     assert.strictEqual(voter.pollId.toNumber(), pollId.toNumber());
-    assert.strictEqual(voter.voter.toString(), signer.publicKey.toString());
+    assert.strictEqual(voter.voter.toBase58(), user.publicKey.toBase58());
   });
-
+  
   // Prevent Duplicate Votes
   it.skip("Prevents duplicate votes", async () => {
     try {
