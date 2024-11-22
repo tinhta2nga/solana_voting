@@ -148,7 +148,9 @@ pub struct Voter {
 // Context for initialize program
 // initialize poll
 #[derive(Accounts)]
-#[instruction(poll_id: u64)]
+#[instruction(poll_id: u64)] 
+// poll_id is used to determine which poll is being operated on.
+//The #[instruction(poll_id: u64)] declares that the poll_id argument will be passed along with the transaction when calling this instruction.
 pub struct Initialize<'info> {
     #[account(
         init,
